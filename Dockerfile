@@ -39,8 +39,7 @@ RUN pip install ipython[all] tqdm sox ruamel.yaml && \
                 matplotlib wget 
 
 # Assumes we are in the root of the nemo git clone
-WORKDIR /workspace/nemo
-COPY . .
+WORKDIR /nemo
 
 #RUN pip install --disable-pip-version-check -U -r requirements.txt
 
