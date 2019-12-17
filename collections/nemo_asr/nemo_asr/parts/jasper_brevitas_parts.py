@@ -2,6 +2,9 @@
 # TODO: review, and copyright and fix/add comments
 import torch
 import torch.nn as nn
+import brevitas.nn as quant_nn
+from brevitas.quant_tensor import QuantTensor
+from nemo_asr.parts.common import  *
 
 jasper_activations = {
     "hardtanh": nn.Hardtanh,
@@ -40,9 +43,9 @@ def get_same_padding(kernel_size, stride, dilation):
     return kernel_size // 2
 
 
-class MaskedConv1d(nn.Conv1d):
+class MaskedConv1d(quant_nn.QuantConv1d):
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+    def __init__(self, in_channels, out_channels, kernel_size, weight_config, stride=1,
                  padding=0, dilation=1, groups=1, heads=-1, bias=False,
                  use_mask=True):
 
@@ -55,11 +58,22 @@ class MaskedConv1d(nn.Conv1d):
             out_channels = heads
             groups = heads
 
-        super(MaskedConv1d, self).__init__(in_channels, out_channels,
-                                           kernel_size,
-                                           stride=stride,
-                                           padding=padding, dilation=dilation,
-                                           groups=groups, bias=bias)
+
+        super(MaskedConv1d, self).__init__(in_channels, out_channels, kernel_size,
+                                   stride=stride, padding=padding, dilation=dilation,
+                                   groups=groups, bias=bias,
+                                   weight_bit_width=weight_config['weight_bit_width'],
+                                   weight_quant_type=brevitas_QuantType[weight_config['weight_quant_type']],
+                                   weight_narrow_range=weight_config['weight_narrow_range'],
+                                   weight_scaling_impl_type=weight_config['weight_scaling_impl_type'],
+                                   weight_scaling_stats_op=weight_config['weight_scaling_stats_op'],
+                                   weight_scaling_min_val=weight_config['weight_scaling_min_val'],
+                                   bias_bit_width=weight_config['bias_bit_width'],
+                                   bias_quant_type=brevitas_QuantType[weight_config['bias_quant_type']],
+                                   bias_narrow_range=weight_config['bias_narrow_range'],
+                                   compute_output_scale=weight_config['compute_output_scale'],
+                                   compute_output_bit_width=weight_config['compute_output_bit_width'],
+                                   return_quant_tensor=False)
         self.use_mask = use_mask
         self.heads = heads
 
@@ -113,7 +127,8 @@ class GroupShuffle(nn.Module):
 
 class JasperBlock(nn.Module):
 
-    def __init__(self, inplanes, planes, repeat=3, kernel_size=11, stride=1,
+    def __init__(self, inplanes, planes, weight_config, activation_config, residual_config,
+                 repeat=3, kernel_size=11, stride=1,
                  dilation=1, padding='same', dropout=0.2, activation=None,
                  residual=True, groups=1, separable=False,
                  heads=-1, tied=False, normalization="batch",
@@ -128,6 +143,7 @@ class JasperBlock(nn.Module):
         self.conv_mask = conv_mask
         self.separable = separable
         self.residual_mode = residual_mode
+        self.quant_normalization = make_norm_scale(residual_config)
 
         self.conv = nn.ModuleList()
         inplanes_loop = inplanes
@@ -144,7 +160,8 @@ class JasperBlock(nn.Module):
                 heads=heads,
                 separable=separable,
                 normalization=normalization,
-                norm_groups=norm_groups)
+                norm_groups=norm_groups,
+                weight_config = weight_config)
 
         for _ in range(repeat - 1):
             if tied:
@@ -162,12 +179,14 @@ class JasperBlock(nn.Module):
                         heads=heads,
                         separable=separable,
                         normalization=normalization,
-                        norm_groups=norm_groups))
+                        norm_groups=norm_groups,
+                        weight_config = weight_config))
 
             self.conv.extend(
                 self._get_act_dropout_layer(
                     drop_prob=dropout,
-                    activation=activation))
+                    activation=activation,
+                    activation_config = activation_config))
 
             inplanes_loop = planes
 
@@ -186,7 +205,8 @@ class JasperBlock(nn.Module):
                     heads=heads,
                     separable=separable,
                     normalization=normalization,
-                    norm_groups=norm_groups))
+                    norm_groups=norm_groups,
+                    weight_config = weight_config))
 
         self.res = nn.ModuleList() if residual else None
         res_panes = residual_panes.copy()
@@ -203,15 +223,17 @@ class JasperBlock(nn.Module):
                             planes,
                             kernel_size=1,
                             normalization=normalization,
-                            norm_groups=norm_groups)))
+                            norm_groups=norm_groups,
+                            weight_config = weight_config)))
         self.out = nn.Sequential(
             *self._get_act_dropout_layer(
                 drop_prob=dropout,
-                activation=activation
+                activation=activation,
+                activation_config = activation_config
             )
         )
 
-    def _get_conv_bn_layer(self, in_channels, out_channels, kernel_size=11,
+    def _get_conv_bn_layer(self, in_channels, out_channels, weight_config, kernel_size=11,
                            stride=1, dilation=1, padding=0, bias=False,
                            groups=1, heads=-1, separable=False,
                            normalization="batch", norm_groups=1):
@@ -224,11 +246,11 @@ class JasperBlock(nn.Module):
                              stride=stride,
                              dilation=dilation, padding=padding, bias=bias,
                              groups=in_channels, heads=heads,
-                             use_mask=self.conv_mask),
+                             use_mask=self.conv_mask, weight_config = weight_config),
                 MaskedConv1d(in_channels, out_channels, kernel_size=1,
                              stride=1,
                              dilation=1, padding=0, bias=bias, groups=groups,
-                             use_mask=self.conv_mask)
+                             use_mask=self.conv_mask, weight_config = weight_config)
             ]
         else:
             layers = [
@@ -236,7 +258,7 @@ class JasperBlock(nn.Module):
                              stride=stride,
                              dilation=dilation, padding=padding, bias=bias,
                              groups=groups,
-                             use_mask=self.conv_mask)
+                             use_mask=self.conv_mask, weight_config = weight_config)
             ]
 
         if normalization == "group":
@@ -259,11 +281,11 @@ class JasperBlock(nn.Module):
             layers.append(GroupShuffle(groups, out_channels))
         return layers
 
-    def _get_act_dropout_layer(self, drop_prob=0.2, activation=None):
+    def _get_act_dropout_layer(self, activation_config, drop_prob=0.2, activation=None):
         if activation is None:
             activation = nn.Hardtanh(min_val=0.0, max_val=20.0)
         layers = [
-            activation,
+            make_jasper_activation(activation, activation_config),
             nn.Dropout(p=drop_prob)
         ]
         return layers
@@ -287,6 +309,9 @@ class JasperBlock(nn.Module):
 
         # compute the residuals
         if self.res is not None:
+            out = self.quant_normalization(out)
+            if self.training:
+                out, scale, bit = out
             for i, layer in enumerate(self.res):
                 res_out = xs[i]
                 for j, res_layer in enumerate(layer):
@@ -294,11 +319,16 @@ class JasperBlock(nn.Module):
                         res_out, _ = res_layer(res_out, lens_orig)
                     else:
                         res_out = res_layer(res_out)
-
+                res_out = self.quant_normalization(res_out)
+                if self.training:
+                    res_out, scale, bit = res_out
                 if self.residual_mode == 'add':
                     out = out + res_out
                 else:
                     out = torch.max(out, res_out)
+
+        if isinstance(out, QuantTensor):
+            out, scale, bit = out
 
         # compute the output
         out = self.out(out)

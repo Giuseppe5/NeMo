@@ -19,7 +19,7 @@ from .data_layer import (AudioToTextDataLayer, AudioPreprocessing,
                          KaldiFeatureDataLayer, TranscriptDataLayer)
 from .greedy_ctc_decoder import GreedyCTCDecoder
 from .beam_search_decoder import BeamSearchDecoderWithLM
-from .jasper import JasperEncoder, JasperDecoderForCTC
+from .jasper_brevitas import JasperEncoder, JasperDecoderForCTC
 from .las.misc import JasperRNNConnector
 from .losses import CTCLossNM
 

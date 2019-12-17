@@ -5,7 +5,7 @@ from functools import partial
 import os
 
 from ruamel.yaml import YAML
-
+from nemo_asr import JasperEncoder, JasperDecoderForCTC
 import nemo
 from nemo.utils.lr_policies import CosineAnnealing
 import nemo.utils.argparse as nm_argparse
@@ -13,6 +13,8 @@ import nemo_asr
 from nemo_asr.helpers import monitor_asr_train_progress, \
     process_evaluation_batch, process_evaluation_epoch
 
+import brevitas.config
+brevitas.config.IGNORE_MISSING_KEYS = True
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -46,6 +48,9 @@ def parse_args():
     parser.add_argument("--synced_bn", action='store_true',
                         help="Use synchronized batch norm")
     parser.add_argument("--synced_bn_groupsize", default=0, type=int)
+    parser.add_argument("--ckpt_enc", type = str)
+    parser.add_argument("--ckpt_dec", type = str)
+    parser.add_argument("--inference_only", type = bool)
 
     args = parser.parse_args()
     if args.max_steps is not None:
@@ -71,7 +76,7 @@ def create_all_dags(args, neural_factory):
     yaml = YAML(typ="safe")
     with open(args.model_config) as f:
         quartz_params = yaml.load(f)
-
+    brevitas.config.IGNORE_MISSING_KEYS = quartz_params["IGNORE_MISSING_KEYS"]
     vocab = quartz_params['labels']
     sample_rate = quartz_params['sample_rate']
 
@@ -91,7 +96,7 @@ def create_all_dags(args, neural_factory):
         sample_rate=sample_rate,
         labels=vocab,
         batch_size=args.batch_size,
-        num_workers=cpu_per_traindl,
+        num_workers=9,
         **train_dl_params,
         # normalize_transcripts=False
     )
@@ -116,7 +121,7 @@ def create_all_dags(args, neural_factory):
                 sample_rate=sample_rate,
                 labels=vocab,
                 batch_size=args.eval_batch_size,
-                num_workers=cpu_per_traindl,
+                num_workers=9,
                 **eval_dl_params,
             )
 
@@ -129,20 +134,31 @@ def create_all_dags(args, neural_factory):
     data_preprocessor = nemo_asr.AudioPreprocessing(
         sample_rate=sample_rate,
         **quartz_params["AudioPreprocessing"])
-
     # (QuartzNet uses the Jasper baseline encoder and decoder)
-    encoder = nemo_asr.JasperEncoder(
+    encoder = JasperEncoder(
         feat_in=quartz_params["AudioPreprocessing"]["features"],
+        input_conf_act = quartz_params["input_configuration_activation"],
+        fb_conf_weight = quartz_params["firstBlock_configuration_weight"],
+        fb_conf_act = quartz_params["firstBlock_configuration_activation"],
+        jb_conf_weight = quartz_params["jasperBlocks_configuration_weight"],
+        jb_conf_act = quartz_params["jasperBlocks_configuration_activation"],
+        jb_conf_residual = quartz_params["jasperBlocks_configuration_residual"],
         **quartz_params["JasperEncoder"])
 
-    decoder = nemo_asr.JasperDecoderForCTC(
+    decoder = JasperDecoderForCTC(
         feat_in=quartz_params["JasperEncoder"]["jasper"][-1]["filters"],
+        weight_config=quartz_params["lastBlock_configuration_weight"],
         num_classes=len(vocab))
 
     ctc_loss = nemo_asr.CTCLossNM(
         num_classes=len(vocab))
 
     greedy_decoder = nemo_asr.GreedyCTCDecoder()
+
+    if args.inference_only:
+        print("Restore file")
+        encoder.restore_from(args.ckpt_enc)
+        decoder.restore_from(args.ckpt_dec)
 
     # create augmentation modules (only used for training) if their configs
     # are present
@@ -187,25 +203,27 @@ def create_all_dags(args, neural_factory):
         input_length=encoded_len_t,
         target_length=transcript_len_t)
 
-    # create train callbacks
-    train_callback = nemo.core.SimpleLossLoggerCallback(
-        tensors=[loss_t, predictions_t, transcript_t, transcript_len_t],
-        print_func=partial(
-            monitor_asr_train_progress,
-            labels=vocab,
-            logger=neural_factory.logger),
-        get_tb_values=lambda x: [["loss", x[0]]],
-        tb_writer=neural_factory.tb_writer)
+    callbacks = []
+    if not args.inference_only:
+        # create train callbacks
+        train_callback = nemo.core.SimpleLossLoggerCallback(
+            tensors=[loss_t, predictions_t, transcript_t, transcript_len_t],
+            print_func=partial(
+                monitor_asr_train_progress,
+                labels=vocab,
+                logger=neural_factory.logger),
+            get_tb_values=lambda x: [["loss", x[0]]],
+            tb_writer=neural_factory.tb_writer)
 
-    callbacks = [train_callback]
+        callbacks.append(train_callback)
 
-    if args.checkpoint_dir or args.load_dir:
-        chpt_callback = nemo.core.CheckpointCallback(
-            folder=args.checkpoint_dir,
-            load_from_folder=args.load_dir,
-            step_freq=args.checkpoint_save_freq)
+        if args.checkpoint_dir or args.load_dir:
+            chpt_callback = nemo.core.CheckpointCallback(
+                folder=args.checkpoint_dir,
+                load_from_folder=args.load_dir,
+                step_freq=args.checkpoint_save_freq)
 
-        callbacks.append(chpt_callback)
+            callbacks.append(chpt_callback)
 
     # assemble eval DAGs
     for i, eval_dl in enumerate(data_layers_eval):
@@ -286,24 +304,30 @@ def main():
         create_all_dags(args, neural_factory)
 
     # train model
-    neural_factory.train(
-        tensors_to_optimize=[train_loss],
-        callbacks=callbacks,
-        lr_policy=CosineAnnealing(
-            args.num_epochs * steps_per_epoch,
-            warmup_steps=args.warmup_steps),
-        optimizer=args.optimizer,
-        optimization_params={
-            "num_epochs": args.num_epochs,
-            "lr": args.lr,
-            "betas": (
-                args.beta1,
-                args.beta2),
-            "weight_decay": args.weight_decay,
-            "grad_norm_clip": None},
-        batches_per_step=args.iter_per_step,
-        synced_batchnorm=args.synced_bn,
-        synced_batchnorm_groupsize=args.synced_bn_groupsize)
+    if args.inference_only:
+
+        neural_factory.eval(
+            callbacks = callbacks
+        )
+    else:
+        neural_factory.train(
+            tensors_to_optimize=[train_loss],
+            callbacks=callbacks,
+            lr_policy=CosineAnnealing(
+                args.num_epochs * steps_per_epoch,
+                warmup_steps=args.warmup_steps),
+            optimizer=args.optimizer,
+            optimization_params={
+                "num_epochs": args.num_epochs,
+                "lr": args.lr,
+                "betas": (
+                    args.beta1,
+                    args.beta2),
+                "weight_decay": args.weight_decay,
+                "grad_norm_clip": None},
+            batches_per_step=args.iter_per_step,
+            synced_batchnorm=args.synced_bn,
+            synced_batchnorm_groupsize=args.synced_bn_groupsize)
 
 
 if __name__ == '__main__':

@@ -6,8 +6,9 @@ from nemo.core.neural_types import (NeuralType, AxisType, ChannelTag, BatchTag,
                                     TimeTag, SpectrogramSignalTag,
                                     ProcessedTimeTag, EncodedRepresentationTag)
 
-from .parts.jasper import JasperBlock, jasper_activations, init_weights
-
+# from nemo_asr.parts.jasper import JasperBlock, jasper_activations, init_weights
+from nemo_asr.parts.jasper_brevitas_parts import JasperBlock, jasper_activations, init_weights
+from nemo_asr.parts.common import  *
 
 class JasperEncoder(TrainableNM):
     """
@@ -90,6 +91,12 @@ class JasperEncoder(TrainableNM):
     def __init__(
             self, *,
             jasper,
+            input_conf_act,
+            fb_conf_act,
+            fb_conf_weight,
+            jb_conf_act,
+            jb_conf_weight,
+            jb_conf_residual,
             activation,
             feat_in,
             normalization_mode="batch",
@@ -102,13 +109,26 @@ class JasperEncoder(TrainableNM):
     ):
         TrainableNM.__init__(self, **kwargs)
 
-        activation = jasper_activations[activation]()
+        activation = activation
         feat_in = feat_in * frame_splicing
+        firstBlock_configuration_activation =fb_conf_act
+        firstBlock_configuration_weight = fb_conf_weight
 
+        jasperBlocks_configuration_activation = jb_conf_act
+        jasperBlocks_configuration_weight = jb_conf_weight
+
+        act_res_config = jb_conf_residual
         residual_panes = []
         encoder_layers = []
         self.dense_residual = False
-        for lcfg in jasper:
+        self.quant_input = make_quantization_input(input_conf_act)
+        for it, lcfg in enumerate(jasper):
+            if it == 0:
+                weight_config = firstBlock_configuration_weight
+                activation_config = firstBlock_configuration_activation
+            else:
+                weight_config = jasperBlocks_configuration_weight
+                activation_config = jasperBlocks_configuration_activation
             dense_res = []
             if lcfg.get('residual_dense', False):
                 residual_panes.append(feat_in)
@@ -136,7 +156,10 @@ class JasperEncoder(TrainableNM):
                             tied=tied,
                             activation=activation,
                             residual_panes=dense_res,
-                            conv_mask=conv_mask))
+                            conv_mask=conv_mask,
+                            activation_config = activation_config,
+                            weight_config = weight_config,
+                            residual_config = act_res_config))
             feat_in = lcfg['filters']
 
         # self.featurizer = FeatureFactory.from_config(cfg['input'])
@@ -145,6 +168,7 @@ class JasperEncoder(TrainableNM):
         self.to(self._device)
 
     def forward(self, audio_signal, length):
+        audio_signal = self.quant_input(audio_signal)
         s_input, length = self.encoder(([audio_signal], length))
         return s_input[-1], length
 
@@ -183,6 +207,7 @@ class JasperDecoderForCTC(TrainableNM):
             self, *,
             feat_in,
             num_classes,
+            weight_config,
             init_mode="xavier_uniform",
             **kwargs
     ):
@@ -193,8 +218,8 @@ class JasperDecoderForCTC(TrainableNM):
         self._num_classes = num_classes + 1
 
         self.decoder_layers = nn.Sequential(
-            nn.Conv1d(self._feat_in, self._num_classes,
-                      kernel_size=1, bias=True),
+            make_quantconv1d(self._feat_in, self._num_classes,
+                      kernel_size=1, weight_config=weight_config),
             nn.LogSoftmax(dim=1))
         self.apply(lambda x: init_weights(x, mode=init_mode))
         self.to(self._device)

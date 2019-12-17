@@ -197,3 +197,86 @@ JasperEncoder:
 
 labels: [" ", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
          "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "'"]
+
+IGNORE_MISSING_KEYS:
+  value : true
+
+input_configuration_activation:
+  bit_width : 8
+  quant_type : "QuantType.FP"
+  scaling_impl_type : "STATS"
+  scaling_stats_op : "MAX"
+  scaling_min_val : 2e-8
+  max_val : 20
+  min_val : -20
+
+firstBlock_configuration_activation:
+  bit_width : 8
+  quant_type : "QuantType.FP"
+  scaling_impl_type : "STATS"
+  scaling_stats_op : "MAX"
+  scaling_min_val : 2e-8
+  max_val : 20
+  min_val : -20
+
+
+firstBlock_configuration_weight:
+  weight_bit_width : 8
+  weight_quant_type : "QuantType.FP"
+  weight_narrow_range : true
+  weight_scaling_impl_type : "STATS"
+  weight_scaling_stats_op : "MAX"
+  weight_scaling_min_val : 2e-8
+  bias : false
+  bias_bit_width : 8
+  bias_quant_type : "QuantType.FP"
+  bias_narrow_range : false
+  compute_output_scale : false
+  compute_output_bit_width : false
+
+jasperBlocks_configuration_activation:
+  bit_width : 8
+  quant_type : "QuantType.FP"
+  scaling_impl_type : "STATS"
+  scaling_stats_op : "MAX"
+  scaling_min_val : 2e-8
+  max_val : 20
+
+
+jasperBlocks_configuration_weight:
+  weight_bit_width : 8
+  weight_quant_type : "QuantType.FP"
+  weight_narrow_range : true
+  weight_scaling_impl_type : "STATS"
+  weight_scaling_stats_op : "MAX"
+  weight_scaling_min_val : 2e-8
+  bias : false
+  bias_bit_width : 8
+  bias_quant_type : "QuantType.FP"
+  bias_narrow_range : false
+  compute_output_scale : false
+  compute_output_bit_width : false
+
+
+lastBlock_configuration_weight:
+  weight_bit_width : 8
+  weight_quant_type : "QuantType.FP"
+  weight_narrow_range : true
+  weight_scaling_impl_type : "STATS"
+  weight_scaling_stats_op : "MAX"
+  weight_scaling_min_val : 2e-8
+  bias : true
+  bias_bit_width : 8
+  bias_quant_type : "QuantType.FP"
+  bias_narrow_range : false
+  compute_output_scale : false
+  compute_output_bit_width : false
+
+jasperBlocks_configuration_residual:
+  bit_width : 8
+  quant_type : "QuantType.FP"
+  scaling_impl_type : "STATS"
+  scaling_stats_op : "MAX"
+  scaling_min_val : 2e-8
+  max_val : 20
+  min_val : -20

@@ -1,15 +1,11 @@
 import setuptools
 
-with open("README.md", "r") as fh:
-    long_description = fh.read()
-
 setuptools.setup(
     name="nemo_toolkit",
     version="0.8.2",
     author="NVIDIA",
     author_email="nemo-toolkit@nvidia.com",
     description="NEMO core package. Necessary for all collections.",
-    long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/nvidia/nemo",
     packages=setuptools.find_packages(),
@@ -23,7 +19,8 @@ setuptools.setup(
         'torchvision',
         'tensorboardX',
         'pandas',
-        'wget'
+        'wget',
+        'docrep'
     ]
 )
 

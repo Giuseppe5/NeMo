@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG FROM_IMAGE_NAME=nvcr.io/nvidia/pytorch:19.08-py3
 
-FROM ${FROM_IMAGE_NAME}
-
+FROM nvcr.io/nvidia/pytorch:19.08-py3
 # Ensure apt-get won't prompt for selecting options
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -39,9 +37,10 @@ RUN pip install ipython[all] tqdm sox ruamel.yaml && \
                 matplotlib wget 
 
 # Assumes we are in the root of the nemo git clone
-WORKDIR /nemo
 
-#RUN pip install --disable-pip-version-check -U -r requirements.txt
+WORKDIR /workspace/nemo
+
+COPY . .
 
 RUN cd nemo && \
     python setup.py install && \
@@ -52,4 +51,8 @@ RUN cd nemo && \
 
 RUN printf "#!/bin/bash\njupyter lab --no-browser --allow-root --ip=0.0.0.0" >> start-jupyter.sh && \
     chmod +x start-jupyter.sh
+
+ENV PYTHONPATH "${PYTHONPATH}:/brevitas"
+ENV PYTHONPATH "${PYTHONPATH}:/nemo/nemo"
+
 
